@@ -1,0 +1,36 @@
+# Ignore everything in root
+/*
+
+# Track the app directory and its contents
+!app/
+!app/**
+
+# Track .gitignore itself (RECOMMENDED)
+!.gitignore
+
+# Optionally track these if you use them
+!README.md
+!requirements.txt
+!pyproject.toml
+
+# Ignore Python virtual environments (outside app/)
+venv/
+.env/
+.venv/
+ENV/
+
+# Ignore Python bytecode and cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Ignore logs, temp, system files
+*.log
+*.tmp
+*.swp
+.DS_Store
+
+# Ignore IDE/editor folders
+.vscode/
+.idea/
