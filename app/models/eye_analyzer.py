@@ -1,3 +1,6 @@
+import math
+
+
 class EyeAnalyzer:
     LEFT_EYE_LANDMARKS = [33, 160, 158, 133, 153, 144]
     RIGHT_EYE_LANDMARKS = [362, 385, 387, 263, 373, 380]

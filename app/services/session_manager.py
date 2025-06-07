@@ -14,7 +14,9 @@ from app.models.cognitive_overload_detector import CognitiveOverloadDetector
 from app.visualizers.overlay import draw_overlays
 from datetime import datetime
 import uuid
+
 logging.basicConfig(level=logging.INFO)
+
 
 class SessionManager:
     def __init__(self, json_path="session_data.json"):
@@ -51,7 +53,8 @@ class SessionManager:
             logging.warning("Session not running")
             return
         self.is_running = False
-        self.thread.join()
+        if self.thread:
+            self.thread.join()
         self.cap.release()
         self.keyboard_analyzer.stop()
         cv2.destroyAllWindows()
@@ -60,14 +63,47 @@ class SessionManager:
 
     def _save_session(self):
         try:
+            # Use the to_dict() method for proper serialization
+            serializable_data = [data.to_dict() for data in self.session_data]
+
             with open(self.json_path, "w") as f:
-                json.dump([data.__dict__ for data in self.session_data], f, indent=4)
+                json.dump(serializable_data, f, indent=4)
             logging.info(f"Session data saved to {self.json_path}")
         except Exception as e:
             logging.error(f"Error saving session data: {e}")
 
+    def load_session(self):
+        """Load session data from JSON file"""
+        try:
+            with open(self.json_path, "r") as f:
+                data_list = json.load(f)
+
+            self.session_data = [SessionData.from_dict(data) for data in data_list]
+            logging.info(f"Loaded {len(self.session_data)} session records")
+            return self.session_data
+        except FileNotFoundError:
+            logging.warning(f"Session file {self.json_path} not found")
+            return []
+        except json.JSONDecodeError as e:
+            logging.error(f"Error parsing JSON: {e}")
+            return []
+        except Exception as e:
+            logging.error(f"Error loading session: {e}")
+            return []
+
     def _run(self):
         prev_second = -1
+        # --- Cumulative metrics for 60s interval ---
+        cumulative_blinks = 0
+        cumulative_yawns = 0
+        cumulative_typing_speed = 0.0
+        cumulative_backspace = 0
+        cumulative_error = 0
+        cumulative_frames = 0
+        interval_start_time = time.time()
+        last_score = 0.0
+        last_label = "Normal"
+
         while self.is_running:
             ret, frame = self.cap.read()
             if not ret:
@@ -86,36 +122,73 @@ class SessionManager:
                     for lm in face_landmarks.landmark:
                         landmarks.append([lm.x * w, lm.y * h, lm.z * w])  # scale x,y,z
 
-                    session_data = SessionData(
-                        session_id=str(uuid.uuid4()),
-                        start_time=datetime.fromtimestamp(timestamp)
-                    )
+                    # Update analyzers and accumulate metrics
+                    is_blinking, blink_count = self.eye_analyzer.analyze(landmarks)
+                    is_yawning, yawn_count = self.yawn_analyzer.analyze(landmarks)
+                    gaze_direction = self.gaze_analyzer.analyze(landmarks)
 
-                    # Pass landmarks (list of [x,y,z]) to analyzers
-                    session_data.is_blinking, session_data.blink_count = self.eye_analyzer.analyze(landmarks)
-                    session_data.is_yawning, session_data.yawn_count = self.yawn_analyzer.analyze(landmarks)
-                    session_data.gaze_direction = self.gaze_analyzer.analyze(landmarks)
-
-                    # Expression analyzer works on raw frame
                     expr, expr_counts = self.expression_analyzer.detect_expression(frame)
-                    session_data.current_expression = expr
-                    session_data.expression_counts = expr_counts
-
                     keyboard_metrics = self.keyboard_analyzer.analyze()
-                    session_data.typing_speed = keyboard_metrics["typing_speed"]
-                    session_data.backspace_count = keyboard_metrics["backspace_count"]
-                    session_data.error_count = keyboard_metrics["error_count"]
 
-                    score, label = self.cognitive_detector.calculate_score(session_data)
-                    session_data.score = score
-                    session_data.label = label
+                    cumulative_blinks = blink_count
+                    cumulative_yawns = yawn_count
+                    cumulative_typing_speed += keyboard_metrics["typing_speed"]
+                    cumulative_backspace += keyboard_metrics["backspace_count"]
+                    cumulative_error += keyboard_metrics["error_count"]
+                    cumulative_frames += 1
 
-                    self.session_data.append(session_data)
+                    # Score and reset every 60 seconds
+                    if timestamp - interval_start_time >= 60 or cumulative_frames == 1:
+                        avg_typing_speed = cumulative_typing_speed / max(1, cumulative_frames)
+                        # Create a session data snapshot for scoring
+                        session_data = SessionData(
+                            session_id=str(uuid.uuid4()),
+                            start_time=datetime.fromtimestamp(interval_start_time),
+                            end_time=datetime.fromtimestamp(timestamp),
+                            blink_count=cumulative_blinks,
+                            is_blinking=is_blinking,
+                            yawn_count=cumulative_yawns,
+                            is_yawning=is_yawning,
+                            gaze_direction=gaze_direction,
+                            current_expression=expr,
+                            expression_counts=expr_counts,
+                            typing_speed=avg_typing_speed,
+                            error_count=cumulative_error,
+                            backspace_count=cumulative_backspace,
+                            cognitive_score=last_score,
+                            overload_label=last_label
+                        )
+                        # Add gaze counts
+                        session_data.gaze_left_count = self.gaze_analyzer.left_count
+                        session_data.gaze_right_count = self.gaze_analyzer.right_count
+                        session_data.gaze_center_count = self.gaze_analyzer.center_count
 
+                        # Calculate cognitive overload score and label
+                        score, label = self.cognitive_detector.calculate_score(session_data)
+                        last_score = score
+                        last_label = label
+                        session_data.cognitive_score = score
+                        session_data.overload_label = label
+                        self.session_data.append(session_data)
+
+                        # Reset interval counters
+                        cumulative_blinks = 0
+                        cumulative_yawns = 0
+                        cumulative_typing_speed = 0.0
+                        cumulative_backspace = 0
+                        cumulative_error = 0
+                        cumulative_frames = 0
+                        interval_start_time = timestamp
+                        self.eye_analyzer.blink_count = 0
+                        self.yawn_analyzer.yawn_count = 0
+                        self.gaze_analyzer.reset_counters()
+
+                    # Prepare display overlay with current values
                     display_frame = frame.copy()
-                    # Optionally draw landmarks for debugging
-                    self.face_detector.draw_landmarks(display_frame, face_landmarks)
-                    draw_overlays(display_frame, session_data)
+                    # Draw only minimal landmarks (eyes and mouth) for clarity
+                    # (Optional: implement minimal landmark drawing in FaceDetector)
+                    # self.face_detector.draw_landmarks(display_frame, face_landmarks, minimal=True)
+                    draw_overlays(display_frame, session_data, gaze_analyzer=self.gaze_analyzer)
                     cv2.imshow("Cognitive Overload Detection", display_frame)
 
                 else:
