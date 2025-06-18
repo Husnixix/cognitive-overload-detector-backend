@@ -30,7 +30,7 @@ class FaceDetector:
         self.mp_drawing.draw_landmarks(
             image=frame_bgr,
             landmark_list=face_landmarks,
-            connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+            connections=self.mp_face_mesh.FACEMESH_CONTOURS,
             landmark_drawing_spec=self.drawing_spec,
             connection_drawing_spec=self.drawing_spec
         )
